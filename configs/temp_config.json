@@ -1,0 +1,1 @@
+{"radius": 0.005, "offset": null, "outer_radius": null, "centerline": {"type": "sinusoidal", "amplitude": 0.005, "wavelength": 0.05, "n_waves": 2, "length": 0.1, "n_points": 100}}

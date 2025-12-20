@@ -6,12 +6,30 @@
     "configurations": [
 
         {
-            "name": "Python Debugger: Current File",
+            "name": "Run bend_cylinder_step2hexmesh.py",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/bend_cylinder_step2hexmesh.py",
             "args": [ "swept_inner_outer_cylinder_straight.step", "straight1.msh", "--n-vertical", "10", "--n-circumferential", "5", "--n-radial", "4", "--periodic" ],
             "console": "integratedTerminal"
+        },
+        
+        {
+            "name": "Run bend_cylinder_step.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/bend_cylinder_step.py",
+            "args": ["./configs/profile_config.json", "./configs/path_config_curved.json"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Run test_occ_cleanup.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_occ_cleanup.py",
+            "args": [/* args for test_occ_cleanup.py */],
+            "console": "integratedTerminal"
         }
+
     ]
 }

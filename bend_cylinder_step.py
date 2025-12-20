@@ -8,6 +8,8 @@ This creates 5 volumes with proper topology for structured hex meshing:
 """
 
 import cadquery as cq
+from cadquery import occ_impl
+
 import numpy as np
 from shapely.geometry import Point
 import json
@@ -173,7 +175,7 @@ def create_straight_path(length):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python inner_outer_cadquery_curved.py <profile_config.json> <path_config.json>")
+        print("Usage: python inner_outer_cadquery_curvedbend_cylinder_step.py <profile_config.json> <path_config.json>")
         sys.exit(1)
     
     # Load configurations
@@ -209,7 +211,7 @@ def main():
             
             print(f"Creating curved sweep:")
             print(f"  Centerline: sinusoidal (amplitude={amplitude}, wavelength={wavelength}, n_waves={n_waves})")
-            print(f"  Length: {length}")
+            print(f"  Length: {length}")            
         elif centerline_type == 'straight':
             length = centerline['length']
             amplitude = 0.0  # No curvature
@@ -276,8 +278,14 @@ def main():
     if centerline and centerline_type == 'sinusoidal':
         # Curved sweep along spline path
         path = create_sinusoidal_path(amplitude, wavelength, n_waves, length, n_points)
-        path_wire = path.val()
+        path_wire = path.wire().val()
+
+        # Get the length of the path (sum of segment lengths)
+
+        path_length = path_wire.Length()
+        print(f"Spline Path length: {path_length:.6f}")
         
+
         print("Sweeping profiles along curved path...")
         inner_core = inner_profile.sweep(path_wire)
         
@@ -291,7 +299,7 @@ def main():
         # Straight extrusion (for straight centerline or no centerline)
         print("Extruding profiles...")
         inner_core = inner_profile.extrude(length)
-        
+        path_length = length
         quadrants = []
         for quadrant_profile in quadrant_profiles:
             quadrant = quadrant_profile.extrude(length)
@@ -299,15 +307,35 @@ def main():
         
         output_file = "swept_inner_outer_cylinder_straight.step"
     
+
     # Combine all volumes using add() to preserve separate volumes
     result = inner_core
     for quad in quadrants:
         result = result.add(quad)
-    
+
     cq.exporters.export(result, output_file)
+    
+    # Sum up the volumes of all solids
+    total_volume = 0.0
+    for solid in result.vals():
+        total_volume += solid.Volume()
+    print(f"Total volume of all solids: {total_volume:.6e} m^3")
+
     
     print(f"\nOutput: {output_file}")
     print(f"Corners found: {len(corners)}")
+
+    # Save parameters to JSON
+    tortuosity = path_length / length if length != 0 else None
+    params = {
+        "outer_radius": outer_radius,
+        "length": length,
+        "path_length_over_length": tortuosity,
+        "total_volume": total_volume
+    }
+    with open("cylinder_geom_params.json", "w") as f:
+        json.dump(params, f, indent=2)
+    print(f"Saved parameters to cylinder_geom_params.json")
 
 
 if __name__ == "__main__":

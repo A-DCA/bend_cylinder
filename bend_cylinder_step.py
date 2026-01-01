@@ -14,7 +14,7 @@ import numpy as np
 from shapely.geometry import Point
 import json
 import sys
-
+from pathlib import Path
 
 def circle_intersection(c1_x, c1_y, c2_x, c2_y, r):
     """Find intersection points of two circles with equal radius."""
@@ -152,7 +152,7 @@ def create_quadrant_wire(corners, outer_points, circle_centers, radius, outer_ra
     return sector_sketch.close()
 
 
-def create_sinusoidal_path(amplitude, wavelength, n_waves, length, n_points):
+def create_sinusoidal_path(amplitude, n_waves, length, n_points):
     """Create a sinusoidal 3D path as a spline."""
     x = np.linspace(0, length, n_points, endpoint=True)
     z = amplitude * np.sin(2 * np.pi * n_waves * x / length)
@@ -174,20 +174,29 @@ def create_straight_path(length):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python inner_outer_cadquery_curvedbend_cylinder_step.py <profile_config.json> <path_config.json>")
+    if len(sys.argv) < 5:
+        print("Usage: python inner_outer_cadquery_curvedbend_cylinder_step.py <unit_config.json> <profile_config.json> <path_config.json> <output.step>")
         sys.exit(1)
     
     # Load configurations
-    profile_config_file = sys.argv[1]
-    path_config_file = sys.argv[2]
+    unit_config_file = sys.argv[1]
+    profile_config_file = sys.argv[2]
+    path_config_file = sys.argv[3]
+    
+    with open(unit_config_file, 'r') as f:
+        unit_config = json.load(f)
     
     with open(profile_config_file, 'r') as f:
         profile_config = json.load(f)
     
     with open(path_config_file, 'r') as f:
         path_config = json.load(f)
-    
+
+    step_file = sys.argv[4] if len(sys.argv) > 4 else "generated.step"
+    if ".step" not in step_file:
+        step_file += ".step"
+    print(f"Output STEP file: {step_file}")
+
     # Profile parameters
     radius = profile_config['radius']
     offset = profile_config.get('offset')
@@ -199,18 +208,18 @@ def main():
     # Get centerline configuration from path config
     centerline = path_config.get('centerline')
     
+    length =0
     if centerline:
         centerline_type = centerline.get('type', 'sinusoidal')
         
         if centerline_type == 'sinusoidal':
-            amplitude = centerline['amplitude']
-            wavelength = centerline['wavelength']
-            n_waves = centerline['n_waves']
             length = centerline['length']
-            n_points = centerline.get('n_points', 100)
+            amplitude = centerline['amplitude_ratio'] * length
+            n_waves = centerline['n_waves']
+            n_points = centerline['n_points']
             
             print(f"Creating curved sweep:")
-            print(f"  Centerline: sinusoidal (amplitude={amplitude}, wavelength={wavelength}, n_waves={n_waves})")
+            print(f"  Centerline: sinusoidal (amplitude={amplitude}, n_waves={n_waves})")
             print(f"  Length: {length}")            
         elif centerline_type == 'straight':
             length = centerline['length']
@@ -277,24 +286,22 @@ def main():
     print("Creating sweep path...")
     if centerline and centerline_type == 'sinusoidal':
         # Curved sweep along spline path
-        path = create_sinusoidal_path(amplitude, wavelength, n_waves, length, n_points)
-        path_wire = path.wire().val()
+        path = create_sinusoidal_path(amplitude, n_waves, length, n_points)
+        path_edge = path.val()
 
         # Get the length of the path (sum of segment lengths)
 
-        path_length = path_wire.Length()
+        path_length = path_edge.Length()
         print(f"Spline Path length: {path_length:.6f}")
         
 
         print("Sweeping profiles along curved path...")
-        inner_core = inner_profile.sweep(path_wire)
+        inner_core = inner_profile.sweep(path_edge)
         
         quadrants = []
         for i, quadrant_profile in enumerate(quadrant_profiles):
-            quadrant = quadrant_profile.sweep(path_wire)
+            quadrant = quadrant_profile.sweep(path_edge)
             quadrants.append(quadrant)
-        
-        output_file = "swept_inner_outer_cylinder_curved.step"
     else:
         # Straight extrusion (for straight centerline or no centerline)
         print("Extruding profiles...")
@@ -305,15 +312,13 @@ def main():
             quadrant = quadrant_profile.extrude(length)
             quadrants.append(quadrant)
         
-        output_file = "swept_inner_outer_cylinder_straight.step"
-    
 
     # Combine all volumes using add() to preserve separate volumes
     result = inner_core
     for quad in quadrants:
         result = result.add(quad)
 
-    cq.exporters.export(result, output_file)
+    cq.exporters.export(result, step_file)
     
     # Sum up the volumes of all solids
     total_volume = 0.0
@@ -322,8 +327,11 @@ def main():
     print(f"Total volume of all solids: {total_volume:.6e} m^3")
 
     
-    print(f"\nOutput: {output_file}")
     print(f"Corners found: {len(corners)}")
+
+    # Get absolute path of step_file
+    step_file = str(Path(step_file).resolve())
+    print(f"Absolute STEP file path: {step_file}")
 
     # Save parameters to JSON
     tortuosity = path_length / length if length != 0 else None
@@ -331,12 +339,20 @@ def main():
         "outer_radius": outer_radius,
         "length": length,
         "path_length_over_length": tortuosity,
-        "total_volume": total_volume
-    }
-    with open("cylinder_geom_params.json", "w") as f:
-        json.dump(params, f, indent=2)
-    print(f"Saved parameters to cylinder_geom_params.json")
+        "total_volume": total_volume,
 
+        "step_file": step_file,
+        "translate": [length, 0, 0],
+        "NR": 6,
+        "NC": 5,
+        "NL": 7, 
+        "enable_periodic": True
+    }
+
+    gmsh_params_file = step_file.replace('.step', '_gmsh.json')
+    with open(gmsh_params_file, "w") as f:
+        json.dump(params, f, indent=2)
+    print(f"Saved parameters to {gmsh_params_file}")
 
 if __name__ == "__main__":
     main()

@@ -10,6 +10,7 @@ import sys
 import subprocess
 import shutil
 from pathlib import Path
+import json
 
 from matplotlib import patches
 
@@ -61,7 +62,7 @@ def get_boundary_patches(boundary_file):
 class PeriodicTubeCaseSetup:
     """Setup and run OpenFOAM periodic tube flow simulation"""
     
-    def __init__(self, case_dir, step_file, gmsh_file, params):
+    def __init__(self, case_dir, step_file, gmsh_file, mesh_params, flow_params):
         """
         Initialize case setup
         
@@ -90,7 +91,8 @@ class PeriodicTubeCaseSetup:
             self.gmsh_file = Path(gmsh_file)
             shutil.copy(self.gmsh_file, self.case_dir)
 
-        self.params = params
+        self.mesh_params = mesh_params
+        self.flow_params = flow_params
         
         
     def run_command(self, cmd, description, cwd=None):
@@ -119,56 +121,12 @@ class PeriodicTubeCaseSetup:
             print(f"Output: {result.stdout[-500:]}")  # Last 500 chars
         return True
     
-    def create_gmsh_script(self):
-        """Generate gmsh geometry script for meshing"""
-        
-        mesh_size_min = self.params.get('mesh_size_min', 0.001)
-        mesh_size_max = self.params.get('mesh_size_max', 0.0025)
-        
-        gmsh_script = f"""// Gmsh script for meshing STEP file
-SetFactory("OpenCASCADE");
-
-// Import STEP geometry
-Merge "{self.step_file.absolute()}";
-
-// Mesh parameters
-Mesh.Algorithm = 6;  // Frontal-Delaunay for 2D
-Mesh.Algorithm3D = 1;  // Delaunay for 3D
-Mesh.CharacteristicLengthMin = {mesh_size_min};
-Mesh.CharacteristicLengthMax = {mesh_size_max};
-
-// Physical groups (will be converted to OpenFOAM patches)
-// Note: Adjust these surface numbers based on your geometry
-Physical Surface("walls") = {{1}};
-Physical Surface("inlet") = {{3}};
-Physical Surface("outlet") = {{2}};
-Physical Volume("internal") = {{1}};
-"""
-        
-        script_path = self.case_dir / "meshTube.geo"
-        with open(script_path, 'w') as f:
-            f.write(gmsh_script)
-        
-        print(f"Created gmsh script: {script_path}")
-        return script_path
     
-    def generate_mesh(self):
-        """Generate mesh using gmsh"""
-        
-        script_path = self.create_gmsh_script()
-        mesh_file = self.case_dir / "tube.msh"
-        
-        # Run gmsh to generate mesh
-        cmd = f"gmsh {script_path.name} -3 -o {mesh_file.name} -format msh2"
-        if not self.run_command(cmd, "Generate mesh with gmsh"):
-            return False
-        
-        return mesh_file
     
     def convert_mesh(self, mesh_file):
         """Convert gmsh mesh to OpenFOAM format"""
         
-        cmd = f"gmshToFoam {mesh_file.name}"
+        cmd = f"gmshToFoam -keepOrientation {mesh_file.name}"
         if not self.run_command(cmd, "Convert mesh to OpenFOAM format"):
             return False
         
@@ -187,7 +145,8 @@ Physical Volume("internal") = {{1}};
         patches_info = get_boundary_patches(boundary_file)    
         print(f"Found {patches_info['nPatches']} patches in boundary file.")
 
-        L = self.params['length']
+        L = self.mesh_params['length']
+        translate = self.mesh_params['translate']
 
         all_patches = []
         patch_dict = {p['name']: p for p in patches_info['patches']}
@@ -206,11 +165,11 @@ Physical Volume("internal") = {{1}};
                     raise ValueError(f"'{key}' not found in {name} patch.")
             content = ""
             if( name == 'inlet'):
-                l = L
+                l = 1
                 frm = 'inlet'
                 to = 'outlet'
             elif( name == 'outlet'):
-                l = -L
+                l = -1
                 to = 'inlet'
                 frm = 'outlet'
             if( name != 'walls'):
@@ -220,7 +179,7 @@ Physical Volume("internal") = {{1}};
                         matchTolerance  0.01;
                         transform       translational;
                         neighbourPatch  {to};
-                        separationVector ({l} 0 0);
+                        separationVector ({l*translate[0]} {l*translate[1]} {l*translate[2]});
                         nFaces          {patch['nFaces']};
                         startFace       {patch['startFace']};
                     }}'''
@@ -519,7 +478,7 @@ boundaryField
         const_dir = self.case_dir / "constant"
         const_dir.mkdir(exist_ok=True)
         
-        nu = self.params['kinematic_viscosity']
+        nu = self.flow_params['kinematic_viscosity']
         
         transport_file = f"""/*--------------------------------*- C++ -*----------------------------------*\\
 | =========                 |                                                 |
@@ -587,8 +546,8 @@ simulationType  laminar;
         
         const_dir = self.case_dir / "constant"
         
-        dp_dx = self.params['pressure_gradient']
-        rho = self.params.get('density', 1000)  # Default water density
+        dp_dx = self.flow_params['pressure_gradient']
+        rho = self.flow_params.get('density', 1000)  # Default water density
         
         # Convert pressure gradient to acceleration: a = (dp/dx) / rho
         accel = dp_dx / rho
@@ -637,8 +596,8 @@ pressureGradient
         sys_dir = self.case_dir / "system"
         sys_dir.mkdir(exist_ok=True)
         
-        end_time = self.params.get('end_time', 100)
-        write_interval = self.params.get('write_interval', 100)
+        end_time = self.flow_params.get('end_time', 100)
+        write_interval = self.flow_params.get('write_interval', 100)
         
         control_file = f"""/*--------------------------------*- C++ -*----------------------------------*\\
 | =========                 |                                                 |
@@ -852,8 +811,9 @@ relaxationFactors
         print("OpenFOAM Periodic Tube Case Setup")
         print("="*70)
         print(f"Case directory: {self.case_dir}")
-        print(f"STEP file: {self.step_file}")
-        print(f"Parameters: {self.params}")
+        print(f"Gmsh file: {self.gmsh_file}")
+        print(f"Parameters: {self.mesh_params}")
+        print(f"Parameters: {self.flow_params}")
         
         # Step 1: Create system files first (needed by OpenFOAM commands)
         print("\n[1/11] Creating system files...")
@@ -869,13 +829,8 @@ relaxationFactors
         if self.gmsh_file.exists():
             print(f"Gmsh file {self.gmsh_file} exists!")
             mesh_file = self.gmsh_file
-        elif self.step_file.exists():
-            print(f"STEP file {self.step_file} exists!")
-            mesh_file = self.generate_mesh()
         else:
-            raise FileNotFoundError("Neither STEP file nor Gmsh mesh file found.")
-
-        if not mesh_file:
+            print(f"no Gmsh mesh file {self.gmsh_file} found.")
             return False
         
         # Step 3: Convert mesh
@@ -928,18 +883,19 @@ relaxationFactors
         print("="*70)
         print(f"\nTo visualize results, run: paraFoam -case {self.case_dir}")
         print("\nTo compute physical pressure in ParaView, use Calculator filter:")
-        print(f"  p_physical = p - {self.params['pressure_gradient']} * coordsX")
+        print(f"  p_physical = p - {self.flow_params['pressure_gradient']} * {self.mesh_params['length']} ")
         
         return True
 
 
 def main():
     """Main execution function"""
-    if len(sys.argv) < 2:
-        print("Usage: python setup_periodic_tube.py mesh_file")
+    if len(sys.argv) < 3:
+        print("Usage: python setup_periodic_tube.py mesh_config_file mesh_file")
         sys.exit(1)
 
-    mesh_file = sys.argv[1]
+    mesh_config_file = sys.argv[1]
+    mesh_file = sys.argv[2]
     if not mesh_file.lower().endswith('.msh') and not Path.exists(mesh_file):
         print("Error: The first argument must be an existing Gmsh mesh file.")
         sys.exit(1)
@@ -955,25 +911,23 @@ def main():
     
 
     # Example parameters
-    params = {
-        'length': 0.1,                    # Tube length [m]
-        'diameter': 0.01,                 # Tube diameter [m]
+    flow_params = {
         'kinematic_viscosity': 1.0e-3,    # Kinematic viscosity [m²/s] (water)
         'density': 1000,                  # Density [kg/m³] (water)
-        'pressure_gradient': 10,        # Pressure gradient [Pa/m]
-        'mesh_size_min': 0.0005,           # Minimum mesh size [m]
-        'mesh_size_max': 0.001,          # Maximum mesh size [m]
+        'pressure_gradient': 10000,        # Pressure gradient [Pa/m]
         'end_time': 200,                 # Number of iterations
         'write_interval': 200,           # Write interval
     }
     
 
-    gmsh_file = mesh_file
-    case_name = os.path.basename(gmsh_file).split('.')[0]
+    with open(mesh_config_file, 'r') as f:
+        mesh_params = json.load(f)
+
+    case_name = os.path.basename(mesh_file).split('.')[0]
     case_dir = Path.cwd()/ case_name
     
     # Create and run setup
-    setup = PeriodicTubeCaseSetup(case_dir, None, gmsh_file, params)
+    setup = PeriodicTubeCaseSetup(case_dir, None, mesh_file, mesh_params, flow_params)
     success = setup.setup_and_run()
     
     sys.exit(0 if success else 1)

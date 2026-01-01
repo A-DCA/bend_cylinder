@@ -1,10 +1,9 @@
 {
   "centerline": {
     "type": "sinusoidal",
-    "amplitude": 0.02,
-    "wavelength": 0.05,
+    "amplitude_ratio": 0.5,
     "n_waves": 2,
-    "length": 0.1,
+    "length": 1,
     "n_points": 200
   }
 }
